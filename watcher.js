@@ -1,31 +1,28 @@
-// var global = Function('return this')();
-
 class Watcher {
 
     constructor() {
-        Watcher.idMap = new Map();
-        Watcher.nextId = 0;
+        this.nextId = 0;
     }
 
-    static setSendMessageFunc(func) {
-        Watcher.sendMessageFunc = func;
-    }
+    watchify(object) {
+        var proxy = this.getWatchifyProxy(object);
 
-    static watchify(object) {
-        var proxy = Watcher.getWatchifyProxy(object);
-
-        proxy.watcher_id = Watcher.sendCreateOp('list');
+        var id = this.sendCreate('list');
+        Reflect.set(proxy, 'watcher_id', id);
 
         return proxy;
     }
 
-    static getWatchifyProxy(object) {
-        var onChange = function (obj, prop, oldVal, newVal) {
+    getWatchifyProxy(object) {
+        //Augment object with ds type-specific logic for handling property changes
+        object.watcher_dslogic = this.newDSLogicForObject(object);
+
+        var onChange = (obj, prop, oldVal, newVal) => {
             
-            var operation = Watcher.operationFromChangeData(obj, prop, oldVal, newVal);
+            var operation = obj.watcher_dslogic.operationFromChangeData(obj, prop, oldVal, newVal);
             var message = "op|" + JSON.stringify(operation);
 
-            Watcher.sendMessageFunc(message);
+            this.sendMessageFunc(message);
         };
 
         var handler = {
@@ -33,6 +30,8 @@ class Watcher {
                 const oldVal = obj[prop];
                 Reflect.set(obj, prop, value);
                 onChange(obj, prop, oldVal, value);
+
+                return true;
             },
         }
 
@@ -41,25 +40,33 @@ class Watcher {
         return proxy;
     }
 
+    newDSLogicForObject(obj) {
+        if (Array.isArray(obj)) {
+            return new ListLogic(obj);
+        } else {
+            throw "We can only watch arrays right now!";
+        }   
+    }
+
     //Traverses the object tree and watchifies every sub object too
-    static watchifyRecursive(object) {
+    watchifyRecursive(object) {
 
     }
 
     //Replaces object property with a watched version of the given property
-    static watch(object, property) {
-        object[property] = Watcher.watchify(object[property]);
+    watch(object, property) {
+        object[property] = this.watchify(object[property]);
     }
 
-    static watchScope(scopeString) {
+    watchScope(scopeString) {
         //parse scopeString
         //find variable declarations
     }
 
-    static sendCreateOp(dsType) {
+    sendCreate(dsType) {
         var operation = {
             dataStructureType: dsType,
-            targetID: Watcher.nextId++,
+            targetID: this.nextId++,
             type: 'create',
             location: [-1],
             timestamp: 0
@@ -67,44 +74,123 @@ class Watcher {
 
         var message = "op|" + JSON.stringify(operation);
 
-        Watcher.sendMessageFunc(message);
+        this.sendMessageFunc(message);
 
         return operation.targetID;
     }
+}
 
-    static operationFromChangeData(obj, prop, oldVal, newVal) {
-        // []
-        // Map
-        // custom treenode class
-        // other js object
+class DSLogic {
+    constructor(ds) {
+        this.ds = ds;
+        this.trackedFunctionCallStack = [];
+    }
 
-        if (Array.isArray(obj)) {
+    trackedFunctionStarted(funcName, args) {
+        this.trackedFunctionCallStack.push(funcName);
+        console.log("starting: " + funcName + "; args: ", args, "; stack: ", this.trackedFunctionCallStack);
+    }
 
-        } else {
-            throw "We can only watch arrays right now!";
-        }
+    trackedFunctionEnded(funcName) {
+        this.trackedFunctionCallStack.pop();
+        console.log("finished: " + funcName + "; stack: ", this.trackedFunctionCallStack);
+    }
 
-        return {coolStuff: "this is another test"};
+    currentlyExecutingTrackedFunction() {
+        return this.trackedFunctionCallStack[this.trackedFunctionCallStack.length - 1];
+    }
+
+    proxifyFunction(obj, funcName) {
+        var self = this;
+
+        obj[funcName] = new Proxy(obj[funcName], {apply: function(target, thisArg, argumentsList) {
+                                        self.trackedFunctionStarted(funcName, argumentsList);
+                                        Reflect.apply(target, thisArg, argumentsList)
+                                        self.trackedFunctionEnded(funcName);
+                                    }});
     }
 }
 
-var cool = function () {
-    var a = 234;
-    var b = 42;
-    var c = 921;   
+//Needs 'logics' for these types:
+// []
+// Map
+// custom treenode class
+// other js object
 
-    return this;
+class ListLogic extends DSLogic {
+
+    constructor(obj) {
+        super(obj);
+
+        this.proxifyTrackedFunctions();
+    }
+
+    operationFromChangeData(obj, prop, oldVal, newVal) {
+        var executingFunc = this.currentlyExecutingTrackedFunction();
+
+        if (typeof executingFunc === 'string') {
+
+            var handlerName = executingFunc + 'ChangeHandler';
+            return this[handlerName](obj, prop, oldVal, newVal);
+
+        } else { //Setting array value directly, e.g. a[3] = 5;
+            console.log("direct array set; list[" + prop + "] = " + newVal + "; was " + oldVal);
+        }
+        
+
+        return {coolStuff: "this is another test"};
+    }
+
+    pushChangeHandler(obj, prop, oldVal, newVal) {
+
+        return {coolStuff: "this is another test"};
+    }
+
+    popChangeHandler(obj, prop, oldVal, newVal) {
+
+        return {coolStuff: "this is another test"};
+    }
+
+    shiftChangeHandler(obj, prop, oldVal, newVal) {
+
+        return {coolStuff: "this is another test"};
+    }
+
+    unshiftChangeHandler(obj, prop, oldVal, newVal) {
+
+        return {coolStuff: "this is another test"};
+    }
+
+    spliceChangeHandler(obj, prop, oldVal, newVal) {
+        console.log("in splice handler; this[" + prop + "] changed");
+
+        return {coolStuff: "this is another test"};
+    }
+
+    proxifyTrackedFunctions() {
+        var list = this.ds;
+
+        this.proxifyFunction(list, 'push');
+        this.proxifyFunction(list, 'pop');
+        this.proxifyFunction(list, 'shift');
+        this.proxifyFunction(list, 'splice');
+        this.proxifyFunction(list, 'unshift');
+    }
+}
+
+var w = new Watcher();
+
+w.sendMessageFunc = function(message) {
+    //send network message to Lucidity
 };
 
-Watcher.setSendMessageFunc(function(message) {
-    console.log("the message: ", message);
-});
-
-var a = Watcher.watchify([1, 2, 3]);
-
-a[0] = 1234;
+var a = w.watchify([1, 2, 3, 4, 5, 6, 7, 8]);
 
 
+
+a[8] = 1234;
+a.push('xyz');
+a.splice(2, 1);
 
 
 
@@ -112,16 +198,8 @@ a[0] = 1234;
 
 
 
-
-
-
-
-
-
-
-
-
-
+//Access global scope anywhere:
+// var global = Function('return this')();
 
 
 
