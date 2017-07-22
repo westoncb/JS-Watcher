@@ -1,28 +1,38 @@
 class Watcher {
 
     constructor() {
-        this.nextId = 0;
+
+    }
+
+    //Unique identifiers for data structures, sent over in each Lucidity operation
+    static nextId() {
+        if (Watcher.next_id === undefined) 
+            Watcher.next_id = 0;
+
+        return Watcher.next_id++;
+    }
+
+    static sendOperationMessage(operation) {
+        Watcher.sendMessage('op|' + JSON.stringify(operation));
     }
 
     watchify(object) {
         var proxy = this.getWatchifyProxy(object);
 
-        var id = this.sendCreate('list');
-        Reflect.set(proxy, 'watcher_id', id);
-
         return proxy;
     }
 
+    //Returns a Proxy object for the given object which will send Lucidity data structure operation
+    //info when certain properties are modified or functions are called on the given object.
     getWatchifyProxy(object) {
-        //Augment object with ds type-specific logic for handling property changes
+        //Augment object with ds type-specific logic for handling property changes and method calls
         object.watcher_dslogic = this.newDSLogicForObject(object);
 
         var onChange = (obj, prop, oldVal, newVal) => {
             
             var operation = obj.watcher_dslogic.operationFromChangeData(obj, prop, oldVal, newVal);
-            var message = "op|" + JSON.stringify(operation);
-
-            this.sendMessageFunc(message);
+            if (operation !== null)
+                Watcher.sendOperationMessage(operation);
         };
 
         var handler = {
@@ -63,43 +73,64 @@ class Watcher {
         //find variable declarations
     }
 
-    sendCreate(dsType) {
+    
+}
+
+//Does all the data structure type-specific work to generate Lucidity operations when
+//an associated object (named 'ds') is modified in certain ways.
+class DSLogic {
+    constructor(ds, dsType) {
+        this.ds = ds;
+        this.dsType = dsType;
+        this.trackedFunctionCallStack = [];
+
+        this.ds_id = this.sendCreateOp();
+    }
+
+    sendCreateOp() {
         var operation = {
-            dataStructureType: dsType,
-            targetID: this.nextId++,
+            dataStructureType: this.dsType,
+            targetID: Watcher.nextId(),
             type: 'create',
             location: [-1],
             timestamp: 0
         };
 
-        var message = "op|" + JSON.stringify(operation);
-
-        this.sendMessageFunc(message);
+        Watcher.sendOperationMessage(operation);
 
         return operation.targetID;
     }
-}
 
-class DSLogic {
-    constructor(ds) {
-        this.ds = ds;
-        this.trackedFunctionCallStack = [];
+    //Should be implemented by subclasses. Called whenever a property on 'ds' is modified.
+    //On some of these modifications nothing will happen, on others we'll generate appropriate
+    //Lucidity operations.
+    operationFromChangeData(obj, prop, oldVal, newVal) {
+        throw "Subclass must override operationFromChangeData!";
     }
 
     trackedFunctionStarted(funcName, args) {
         this.trackedFunctionCallStack.push(funcName);
-        console.log("starting: " + funcName + "; args: ", args, "; stack: ", this.trackedFunctionCallStack);
+
+        //If present, call a subclasses method which will generate a ds operation
+        //corresponding to the tracked function's behavior.
+        if (this[funcName + 'Op'] !== undefined) {
+            this[funcName + 'Op'](...args);
+        }
+
+        // console.log("starting: " + funcName + "; args: ", args, "; stack: ", this.trackedFunctionCallStack);
     }
 
     trackedFunctionEnded(funcName) {
         this.trackedFunctionCallStack.pop();
-        console.log("finished: " + funcName + "; stack: ", this.trackedFunctionCallStack);
+        // console.log("finished: " + funcName + "; stack: ", this.trackedFunctionCallStack);
     }
 
     currentlyExecutingTrackedFunction() {
         return this.trackedFunctionCallStack[this.trackedFunctionCallStack.length - 1];
     }
 
+    //Replace function named 'funcName' on 'obj' with a function Proxy used to notify handlers before
+    //the function starts and after it ends.
     proxifyFunction(obj, funcName) {
         var self = this;
 
@@ -108,6 +139,13 @@ class DSLogic {
                                         Reflect.apply(target, thisArg, argumentsList)
                                         self.trackedFunctionEnded(funcName);
                                     }});
+    }
+
+    //Should be implemented by subclasses. Subclasses should use proxifyFunction(...) to 
+    //set up tracking on all functions which should be tracked (i.e. those for which we generate
+    //Lucidity operations on their invokation).
+    proxifyTrackedFunctions() {
+        throw "Subclass must override proxifyTrackedFunctions!";
     }
 }
 
@@ -119,51 +157,48 @@ class DSLogic {
 
 class ListLogic extends DSLogic {
 
-    constructor(obj) {
-        super(obj);
-
-        this.proxifyTrackedFunctions();
+    constructor(ds) {
+        super(ds, 'list');
     }
 
     operationFromChangeData(obj, prop, oldVal, newVal) {
         var executingFunc = this.currentlyExecutingTrackedFunction();
 
-        if (typeof executingFunc === 'string') {
+        if (executingFunc === undefined ) { //Setting array value directly, e.g. a[3] = 5;
 
-            var handlerName = executingFunc + 'ChangeHandler';
-            return this[handlerName](obj, prop, oldVal, newVal);
-
-        } else { //Setting array value directly, e.g. a[3] = 5;
             console.log("direct array set; list[" + prop + "] = " + newVal + "; was " + oldVal);
+            return {coolStuff: "this is another test"};
+
+        } else {
+
+            return null;
         }
+    }
+
+    pushOp(element) {
+
+        console.log('push op:', element);
+        Watcher.sendOperationMessage({push: "this is another test", targetID: this.ds_id});
+    }
+
+    popOp() {
+
+        return {coolStuff: "this is another test"};
+    }
+
+    shiftOp() {
+
+        return {coolStuff: "this is another test"};
+    }
+
+    unshiftOp(element) {
+
+        return {coolStuff: "this is another test"};
+    }
+
+    spliceOp(start, deleteCount, ...newItems) {
         
-
-        return {coolStuff: "this is another test"};
-    }
-
-    pushChangeHandler(obj, prop, oldVal, newVal) {
-
-        return {coolStuff: "this is another test"};
-    }
-
-    popChangeHandler(obj, prop, oldVal, newVal) {
-
-        return {coolStuff: "this is another test"};
-    }
-
-    shiftChangeHandler(obj, prop, oldVal, newVal) {
-
-        return {coolStuff: "this is another test"};
-    }
-
-    unshiftChangeHandler(obj, prop, oldVal, newVal) {
-
-        return {coolStuff: "this is another test"};
-    }
-
-    spliceChangeHandler(obj, prop, oldVal, newVal) {
-        console.log("in splice handler; this[" + prop + "] changed");
-
+        console.log('spliceOp: ', newItems);
         return {coolStuff: "this is another test"};
     }
 
@@ -180,17 +215,18 @@ class ListLogic extends DSLogic {
 
 var w = new Watcher();
 
-w.sendMessageFunc = function(message) {
+Watcher.sendMessage = function(message) {
     //send network message to Lucidity
+
+    console.log("sending: " + message);
 };
 
 var a = w.watchify([1, 2, 3, 4, 5, 6, 7, 8]);
 
 
-
 a[8] = 1234;
 a.push('xyz');
-a.splice(2, 1);
+a.splice(2, 1, 'instead', 'and_another', 'blah');
 
 
 
