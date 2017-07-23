@@ -214,6 +214,8 @@ class ListLogic extends DSLogic {
     }
 }
 
+exports.Watcher = Watcher;
+
 // var w = new Watcher();
 
 // Watcher.sendMessage = function(message) {
