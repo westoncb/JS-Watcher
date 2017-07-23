@@ -71,9 +71,8 @@ class Watcher {
     watchScope(scopeString) {
         //parse scopeString
         //find variable declarations
-    }
-
-    
+        //watch all watchable declared objects/arrays
+    }    
 }
 
 //Does all the data structure type-specific work to generate Lucidity operations when
@@ -161,6 +160,7 @@ class ListLogic extends DSLogic {
         super(ds, 'list');
     }
 
+    //Overrides parent function
     operationFromChangeData(obj, prop, oldVal, newVal) {
         var executingFunc = this.currentlyExecutingTrackedFunction();
 
@@ -202,6 +202,7 @@ class ListLogic extends DSLogic {
         return {coolStuff: "this is another test"};
     }
 
+    //Overrides parent function
     proxifyTrackedFunctions() {
         var list = this.ds;
 
@@ -213,20 +214,20 @@ class ListLogic extends DSLogic {
     }
 }
 
-var w = new Watcher();
+// var w = new Watcher();
 
-Watcher.sendMessage = function(message) {
-    //send network message to Lucidity
+// Watcher.sendMessage = function(message) {
+//     //send network message to Lucidity
 
-    console.log("sending: " + message);
-};
+//     console.log("sending: " + message);
+// };
 
-var a = w.watchify([1, 2, 3, 4, 5, 6, 7, 8]);
+// var a = w.watchify([1, 2, 3, 4, 5, 6, 7, 8]);
 
 
-a[8] = 1234;
-a.push('xyz');
-a.splice(2, 1, 'instead', 'and_another', 'blah');
+// a[8] = 1234;
+// a.push('xyz');
+// a.splice(2, 1, 'instead', 'and_another', 'blah');
 
 
 
