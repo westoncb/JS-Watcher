@@ -96,8 +96,7 @@ class Watcher {
 
         for (var property in obj) {
             if (obj.hasOwnProperty(property)) {
-
-                if (Util.isPrimitive(obj[property]) {
+                if (Util.isPrimitive(obj[property])) {
                     if (dsLogic.shouldTrackIdentiesForProperty(obj, property)) {
                         Watcher.objectifyProperty(obj, property);
                     }
@@ -106,7 +105,7 @@ class Watcher {
                         visited.push(obj[property]);
                         Watcher.objectifyDS(obj[property], dsLogic, visited);
                 }
-                
+
             }
         }
     }
@@ -279,7 +278,7 @@ class ListLogic extends DSLogic {
 
 class Util {
     static isPrimitive(val) {
-        return val === Object(val);
+        return val !== Object(val);
     }
 }
 
