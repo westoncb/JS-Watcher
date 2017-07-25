@@ -1,5 +1,4 @@
 class Watcher {
-
     constructor() {
 
     }
@@ -28,6 +27,10 @@ class Watcher {
         //Augment object with ds type-specific logic for handling property changes and method calls
         object.watcher_dslogic = this.newDSLogicForObject(object);
 
+        //Need to box all primitive properties since there is no way of associating 
+        //unique identifiers with primitive values (that I can think of).
+        Watcher.objectifyDS(object, object.watcher_dslogic);
+
         var onChange = (obj, prop, oldVal, newVal) => {
             
             var operation = obj.watcher_dslogic.operationFromChangeData(obj, prop, oldVal, newVal);
@@ -38,8 +41,19 @@ class Watcher {
         var handler = {
             set (obj, prop, value) {
                 const oldVal = obj[prop];
-                Reflect.set(obj, prop, value);
-                onChange(obj, prop, oldVal, value);
+
+                var valToStore;
+                var shouldBoxValue = object.watcher_dslogic.shouldTrackIdentiesForProperty(obj, prop);
+
+                if (value !== Util.isPrimitive(value) && shouldBoxValue) {
+                    valToStore = Watcher.getBoxedValue(value);
+                } else {
+                    valToStore = value;
+                }
+
+                Reflect.set(obj, prop, valToStore);
+
+                onChange(obj, prop, oldVal, valToStore);
 
                 return true;
             },
@@ -72,7 +86,44 @@ class Watcher {
         //parse scopeString
         //find variable declarations
         //watch all watchable declared objects/arrays
-    }    
+    }
+
+    //Walk all properties and box primitive values that need unique identifiers
+    //associated with them.
+    static objectifyDS(obj, dsLogic, visited) {
+        if (visited === undefined)
+            visited = [];
+
+        for (var property in obj) {
+            if (obj.hasOwnProperty(property)) {
+
+                if (Util.isPrimitive(obj[property]) {
+                    if (dsLogic.shouldTrackIdentiesForProperty(obj, property)) {
+                        Watcher.objectifyProperty(obj, property);
+                    }
+                }
+                else if (!visited.includes(obj[property])) {
+                        visited.push(obj[property]);
+                        Watcher.objectifyDS(obj[property], dsLogic, visited);
+                }
+                
+            }
+        }
+    }
+
+    static objectifyProperty(obj, property) {
+        obj[property] = Watcher.getBoxedValue(obj[property]);
+    }
+
+    static getBoxedValue(val) {
+        if (typeof val === 'string') {
+            return new String(val);
+        } else if (typeof val === 'number') {
+            return new Number(val);
+        } else { //boolean
+            return new Boolean(val);
+        }
+    }
 }
 
 //Does all the data structure type-specific work to generate Lucidity operations when
@@ -146,6 +197,10 @@ class DSLogic {
     proxifyTrackedFunctions() {
         throw "Subclass must override proxifyTrackedFunctions!";
     }
+
+    shouldTrackIdentiesForProperty(propertyName) {
+        throw "Subclass must override shouldTrackIdentiesForProperty!";   
+    }
 }
 
 //Needs 'logics' for these types:
@@ -167,7 +222,7 @@ class ListLogic extends DSLogic {
         if (executingFunc === undefined ) { //Setting array value directly, e.g. a[3] = 5;
 
             console.log("direct array set; list[" + prop + "] = " + newVal + "; was " + oldVal);
-            return {coolStuff: "this is another test"};
+            return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
 
         } else {
 
@@ -183,23 +238,23 @@ class ListLogic extends DSLogic {
 
     popOp() {
 
-        return {coolStuff: "this is another test"};
+        return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
     }
 
     shiftOp() {
 
-        return {coolStuff: "this is another test"};
+        return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
     }
 
     unshiftOp(element) {
 
-        return {coolStuff: "this is another test"};
+        return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
     }
 
     spliceOp(start, deleteCount, ...newItems) {
         
         console.log('spliceOp: ', newItems);
-        return {coolStuff: "this is another test"};
+        return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
     }
 
     //Overrides parent function
@@ -211,6 +266,20 @@ class ListLogic extends DSLogic {
         this.proxifyFunction(list, 'shift');
         this.proxifyFunction(list, 'splice');
         this.proxifyFunction(list, 'unshift');
+    }
+
+    shouldTrackIdentiesForProperty(obj, propertyName) {
+        //If it is a number, it's an array element
+        //we also check that obj is this.ds since we might
+        //be getting asked about a 'nested' property on the ds
+        //and we don't want to track any of those.
+        return obj === this.ds && !isNaN(propertyName);
+    }
+}
+
+class Util {
+    static isPrimitive(val) {
+        return val === Object(val);
     }
 }
 
