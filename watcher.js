@@ -232,6 +232,12 @@ class DSLogic {
         var self = this;
 
         obj[funcName] = new Proxy(obj[funcName], {apply: function(target, thisArg, argumentsList) {
+
+                                        //Just box any primitive that's potentially getting added to our DS
+                                        for (var i = 0; i < argumentsList.length; i++) {
+                                            argumentsList[i] = Watcher.getBoxedValue(argumentsList[i]);
+                                        }
+
                                         self.trackedFunctionStarted(funcName, argumentsList);
                                         Reflect.apply(target, thisArg, argumentsList)
                                         self.trackedFunctionEnded(funcName);
@@ -250,8 +256,6 @@ class DSLogic {
     }
 
     modificationOp(location, elementValue, opType) {
-        elementValue = Watcher.getBoxedValue(elementValue);
-
         if (!Array.isArray(location))
             throw "'location' must be an array.";
 
