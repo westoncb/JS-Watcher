@@ -33,7 +33,7 @@ class Watcher {
                 var valToStore;
                 var shouldBoxValue = object.watcher_dslogic.shouldTrackIdentiesForProperty(obj, prop);
 
-                if (value !== Util.isPrimitive(value) && shouldBoxValue) {
+                if (Util.isPrimitive(value) && shouldBoxValue) {
                     valToStore = Watcher.getBoxedValue(value);
                 } else {
                     valToStore = value;
@@ -102,6 +102,9 @@ class Watcher {
     }
 
     static getBoxedValue(val) {
+        if (!Util.isPrimitive(val))
+            return val;
+
         if (typeof val === 'string') {
             return new String(val);
         } else if (typeof val === 'number') {
@@ -164,10 +167,12 @@ class DSLogic {
         //nor later than on the following line).
         Watcher.objectifyDS(ds, this);
 
+        this.proxifyTrackedFunctions();
+
         //Initialize data structure in Lucidity
         this.ds_id = this.sendCreateOp();
         var initializeOps = this.getInitializeOps();
-        if (initializeOps.length === 0) {
+        if (initializeOps.length !== 0) {
             Watcher.sendOperationMessage(this.compoundOp(...initializeOps));
         }
     }
@@ -245,6 +250,11 @@ class DSLogic {
     }
 
     modificationOp(location, elementValue, opType) {
+        elementValue = Watcher.getBoxedValue(elementValue);
+
+        if (!Array.isArray(location))
+            throw "'location' must be an array.";
+
         return {
             targetID: this.ds_id,
             elementID: Watcher.elementId(elementValue),
@@ -318,10 +328,10 @@ class ListLogic extends DSLogic {
         }
     }
 
-    pushOp(element) {
+    pushOp(value) {
 
-        console.log('push op:', element);
-        Watcher.sendOperationMessage({push: "this is another test", targetID: this.ds_id});
+        console.log('push op:', value);
+        Watcher.sendOperationMessage(this.modificationOp([this.ds.length], value, OpType.ADD));
     }
 
     popOp() {
