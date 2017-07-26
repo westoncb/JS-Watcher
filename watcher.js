@@ -3,14 +3,6 @@ class Watcher {
 
     }
 
-    //Unique identifiers for data structures, sent over in each Lucidity operation
-    static nextId() {
-        if (Watcher.next_id === undefined) 
-            Watcher.next_id = 0;
-
-        return Watcher.next_id++;
-    }
-
     static sendOperationMessage(operation) {
         Watcher.sendMessage('op|' + JSON.stringify(operation));
     }
@@ -26,10 +18,6 @@ class Watcher {
     getWatchifyProxy(object) {
         //Augment object with ds type-specific logic for handling property changes and method calls
         object.watcher_dslogic = this.newDSLogicForObject(object);
-
-        //Need to box all primitive properties since there is no way of associating 
-        //unique identifiers with primitive values (that I can think of).
-        Watcher.objectifyDS(object, object.watcher_dslogic);
 
         var onChange = (obj, prop, oldVal, newVal) => {
             
@@ -100,8 +88,7 @@ class Watcher {
                     if (dsLogic.shouldTrackIdentiesForProperty(obj, property)) {
                         Watcher.objectifyProperty(obj, property);
                     }
-                }
-                else if (!visited.includes(obj[property])) {
+                } else if (!visited.includes(obj[property])) {
                         visited.push(obj[property]);
                         Watcher.objectifyDS(obj[property], dsLogic, visited);
                 }
@@ -123,6 +110,44 @@ class Watcher {
             return new Boolean(val);
         }
     }
+
+    //If we'd like Lucidiy to produce correct 'move' animations when an element moves from
+    //one position to another (or from one DS to another), we need to uniquely identify elements.
+    static elementId(element) {
+        if (element.watcher_element_id === undefined) {
+            Object.defineProperty(element, "watcher_element_id", {
+                value: Watcher.nextElementId(),
+                enumerable: false,
+                writable: false
+            });
+        }
+
+        return element.watcher_element_id;
+    }
+
+    static nextElementId() {
+        if (Watcher.next_element_id === undefined)
+            Watcher.next_element_id = 0;
+
+        return Watcher.next_element_id++;
+    }
+
+    //Unique identifiers for data structures are sent over in each Lucidity operation.
+    //These are generated once, each time a new data structure is created, but then
+    //every operation meant to be applied to that data structure includes the DS's ID.
+    static nextDSId() {
+        if (Watcher.next_ds_id === undefined) 
+            Watcher.next_ds_id = 0;
+
+        return Watcher.next_ds_id++;
+    }
+}
+
+const OpType = {
+    ADD: 'add',
+    REMOVE: 'remove',
+    CREATE: 'create',
+    COMPOUND: 'compound'
 }
 
 //Does all the data structure type-specific work to generate Lucidity operations when
@@ -133,14 +158,25 @@ class DSLogic {
         this.dsType = dsType;
         this.trackedFunctionCallStack = [];
 
+        //Need to box all primitive properties since there is no way of associating 
+        //unique identifiers with primitive values (that I can think of).
+        //Order matters when calling this (i.e. it probably shouldn't be called earlier
+        //nor later than on the following line).
+        Watcher.objectifyDS(ds, this);
+
+        //Initialize data structure in Lucidity
         this.ds_id = this.sendCreateOp();
+        var initializeOps = this.getInitializeOps();
+        if (initializeOps.length === 0) {
+            Watcher.sendOperationMessage(this.compoundOp(...initializeOps));
+        }
     }
 
     sendCreateOp() {
         var operation = {
             dataStructureType: this.dsType,
-            targetID: Watcher.nextId(),
-            type: 'create',
+            targetID: Watcher.nextDSId(),
+            type: OpType.CREATE,
             location: [-1],
             timestamp: 0
         };
@@ -150,11 +186,18 @@ class DSLogic {
         return operation.targetID;
     }
 
+    //If the data structure should be initialize with some elements, sublcasses should
+    //return the operations that will add those elements here. Return an empty array
+    //if there are no initial values.
+    getInitializeOps() {
+        throw "Subclasses must override getInitializeOps!";
+    }
+
     //Should be implemented by subclasses. Called whenever a property on 'ds' is modified.
     //On some of these modifications nothing will happen, on others we'll generate appropriate
     //Lucidity operations.
     operationFromChangeData(obj, prop, oldVal, newVal) {
-        throw "Subclass must override operationFromChangeData!";
+        throw "Subclasses must override operationFromChangeData!";
     }
 
     trackedFunctionStarted(funcName, args) {
@@ -194,11 +237,32 @@ class DSLogic {
     //set up tracking on all functions which should be tracked (i.e. those for which we generate
     //Lucidity operations on their invokation).
     proxifyTrackedFunctions() {
-        throw "Subclass must override proxifyTrackedFunctions!";
+        throw "Subclasses must override proxifyTrackedFunctions!";
     }
 
     shouldTrackIdentiesForProperty(propertyName) {
-        throw "Subclass must override shouldTrackIdentiesForProperty!";   
+        throw "Subclasses must override shouldTrackIdentiesForProperty!";   
+    }
+
+    modificationOp(location, elementValue, opType) {
+        return {
+            targetID: this.ds_id,
+            elementID: Watcher.elementId(elementValue),
+            type: opType,
+            location: location,
+            untypedArgument: elementValue,
+            timestamp: 0
+        };
+    }
+
+    compoundOp(...subOps) {
+        return {
+            targetID: this.ds_id,
+            elementID: "null",
+            type: OpType.COMPOUND,
+            subOperations: subOps,
+            timestamp: 0
+        }
     }
 }
 
@@ -212,6 +276,16 @@ class ListLogic extends DSLogic {
 
     constructor(ds) {
         super(ds, 'list');
+
+    }
+
+    getInitializeOps() {
+        var addOps = [];
+        this.ds.forEach((value, i) => {
+            addOps.push(this.arraySetOp(i, undefined, value));
+        });
+
+        return addOps;
     }
 
     //Overrides parent function
@@ -219,13 +293,28 @@ class ListLogic extends DSLogic {
         var executingFunc = this.currentlyExecutingTrackedFunction();
 
         if (executingFunc === undefined ) { //Setting array value directly, e.g. a[3] = 5;
+            // console.log("direct array set; list[" + prop + "] = " + newVal + "; was " + oldVal);
 
-            console.log("direct array set; list[" + prop + "] = " + newVal + "; was " + oldVal);
-            return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
+            var index = Number(prop);
+            return this.arraySetOp(index, oldVal, newVal);
 
         } else {
 
             return null;
+        }
+    }
+
+    arraySetOp(index, oldVal, newVal) {
+        var addOp = this.modificationOp([index], newVal, OpType.ADD);
+
+        if (oldVal === undefined) {
+            return addOp;
+        }
+        else { //Remove the old value first
+            var removeOp = this.modificationOp([index], oldVal, OpType.REMOVE);
+            var setOp = this.compoundOp(removeOp, addOp);
+
+            return setOp;
         }
     }
 
