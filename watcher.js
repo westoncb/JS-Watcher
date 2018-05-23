@@ -22,7 +22,7 @@ class Watcher {
         var onChange = (obj, prop, oldVal, newVal) => {
             
             var operation = obj.watcher_dslogic.operationFromChangeData(obj, prop, oldVal, newVal);
-            if (operation !== null)
+            if (!Util.isFalsey(operation))
                 Watcher.sendOperationMessage(operation);
         };
 
@@ -30,18 +30,15 @@ class Watcher {
             set (obj, prop, value) {
                 const oldVal = obj[prop];
 
-                var valToStore;
-                var shouldBoxValue = object.watcher_dslogic.shouldTrackIdentiesForProperty(obj, prop);
+                //'value' is potentially already an object, in which case
+                //getBoxedValue(...) will just return it unchanged.
+                var boxedVal = Watcher.getBoxedValue(value);
 
-                if (Util.isPrimitive(value) && shouldBoxValue) {
-                    valToStore = Watcher.getBoxedValue(value);
-                } else {
-                    valToStore = value;
+                Reflect.set(obj, prop, boxedVal);
+
+                if (obj.watcher_dslogic.isTrackedProperty(obj, prop)) {
+                    onChange(obj, prop, oldVal, boxedVal);
                 }
-
-                Reflect.set(obj, prop, valToStore);
-
-                onChange(obj, prop, oldVal, valToStore);
 
                 return true;
             },
@@ -85,7 +82,7 @@ class Watcher {
         for (var property in obj) {
             if (obj.hasOwnProperty(property)) {
                 if (Util.isPrimitive(obj[property])) {
-                    if (dsLogic.shouldTrackIdentiesForProperty(obj, property)) {
+                    if (dsLogic.isTrackedProperty(obj, property)) {
                         Watcher.objectifyProperty(obj, property);
                     }
                 } else if (!visited.includes(obj[property])) {
@@ -102,7 +99,7 @@ class Watcher {
     }
 
     static getBoxedValue(val) {
-        if (!Util.isPrimitive(val))
+        if (Util.isFalsey(val) || !Util.isPrimitive(val))
             return val;
 
         if (typeof val === 'string') {
@@ -117,6 +114,10 @@ class Watcher {
     //If we'd like Lucidiy to produce correct 'move' animations when an element moves from
     //one position to another (or from one DS to another), we need to uniquely identify elements.
     static elementId(element) {
+        if (Util.isFalsey(element)) {
+            return -1;
+        }
+
         if (element.watcher_element_id === undefined) {
             Object.defineProperty(element, "watcher_element_id", {
                 value: Watcher.nextElementId(),
@@ -233,6 +234,7 @@ class DSLogic {
 
         obj[funcName] = new Proxy(obj[funcName], {apply: function(target, thisArg, argumentsList) {
 
+                                        //IMPORTANT: this is happening.
                                         //Just box any primitive that's potentially getting added to our DS
                                         for (var i = 0; i < argumentsList.length; i++) {
                                             argumentsList[i] = Watcher.getBoxedValue(argumentsList[i]);
@@ -251,31 +253,48 @@ class DSLogic {
         throw "Subclasses must override proxifyTrackedFunctions!";
     }
 
-    shouldTrackIdentiesForProperty(propertyName) {
-        throw "Subclasses must override shouldTrackIdentiesForProperty!";   
+    isTrackedProperty(object, propertyName) {
+        throw "Subclasses must override isTrackedProperty!";   
     }
 
+    //Returns a 'modification' operation, e.g. ADD/REMOVE
     modificationOp(location, elementValue, opType) {
         if (!Array.isArray(location))
-            throw "'location' must be an array.";
+            throw "'location' argument in modificationOp(...) must be an array.";
 
         return {
             targetID: this.ds_id,
             elementID: Watcher.elementId(elementValue),
             type: opType,
             location: location,
-            untypedArgument: elementValue,
+            untypedArgument: DSLogic.operationArgumentToString(elementValue),
             timestamp: 0
         };
     }
 
+    //Returns a compound operation comprised of the given operations
     compoundOp(...subOps) {
+        if (subOps.length >= 1 && Array.isArray(subOps[0]))
+            throw "compoundOp() uses the spread operator; don't pass it an array of things."
+
         return {
             targetID: this.ds_id,
             elementID: "null",
             type: OpType.COMPOUND,
             subOperations: subOps,
             timestamp: 0
+        }
+    }
+
+    static operationArgumentToString(arg) {
+        if (arg === null) {
+            return 'null';
+        } else if (arg === undefined) {
+            return 'undefined';
+        } else if (typeof arg !== 'string') {
+            return new String(arg);
+        } else {
+            return arg;
         }
     }
 }
@@ -291,40 +310,60 @@ class ListLogic extends DSLogic {
     constructor(ds) {
         super(ds, 'list');
 
+        this.old_ds = this.ds.slice();
     }
 
     getInitializeOps() {
         var addOps = [];
         this.ds.forEach((value, i) => {
-            addOps.push(this.arraySetOp(i, undefined, value));
+            addOps.push(this.modificationOp([i], value, OpType.ADD));
         });
 
         return addOps;
     }
 
     //Overrides parent function
+    //Generate add/remove operations based on property change data
     operationFromChangeData(obj, prop, oldVal, newVal) {
-        var executingFunc = this.currentlyExecutingTrackedFunction();
+        // console.log("direct array set; list[" + prop + "] = ", newVal, "; was ", oldVal);
 
-        if (executingFunc === undefined ) { //Setting array value directly, e.g. a[3] = 5;
-            // console.log("direct array set; list[" + prop + "] = " + newVal + "; was " + oldVal);
+        var operation;
+        if (prop == 'length' && newVal < oldVal) { //length was reduced; truncate list
+
+            operation = this.lengthReducedOp(oldVal, newVal);
+        } else if (Util.isNumber(prop)) { //setting some array val, e.g. 
 
             var index = Number(prop);
-            return this.arraySetOp(index, oldVal, newVal);
-
-        } else {
-
-            return null;
+            operation = this.arraySetOp(index, oldVal, newVal);
         }
+
+        //Copy whole array after every operation so we can access the old state of the array on the next
+        //property change event.
+        this.old_ds = this.ds.slice();
+
+        return operation;
     }
 
+    lengthReducedOp(oldLength, newLength) {
+        var removeOps = [];
+        for (var i = newLength; i < oldLength; i++) {
+            removeOps.push(this.modificationOp([newLength], this.old_ds[i], OpType.REMOVE));
+        }
+        var compound = this.compoundOp(...removeOps);
+
+        return compound;
+    }
+
+    //Returns the operation for setting the value of some array element
     arraySetOp(index, oldVal, newVal) {
         var addOp = this.modificationOp([index], newVal, OpType.ADD);
 
-        if (oldVal === undefined) {
-            return addOp;
+        if (index >= this.old_ds.length) {
+
+             return addOp;
         }
         else { //Remove the old value first
+
             var removeOp = this.modificationOp([index], oldVal, OpType.REMOVE);
             var setOp = this.compoundOp(removeOp, addOp);
 
@@ -332,56 +371,31 @@ class ListLogic extends DSLogic {
         }
     }
 
-    pushOp(value) {
-
-        console.log('push op:', value);
-        Watcher.sendOperationMessage(this.modificationOp([this.ds.length], value, OpType.ADD));
-    }
-
-    popOp() {
-
-        return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
-    }
-
-    shiftOp() {
-
-        return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
-    }
-
-    unshiftOp(element) {
-
-        return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
-    }
-
-    spliceOp(start, deleteCount, ...newItems) {
-        
-        console.log('spliceOp: ', newItems);
-        return {"dataStructureType":"list","targetID":0,"type":"create","location":[-1],"timestamp":0};
-    }
-
     //Overrides parent function
     proxifyTrackedFunctions() {
-        var list = this.ds;
-
-        this.proxifyFunction(list, 'push');
-        this.proxifyFunction(list, 'pop');
-        this.proxifyFunction(list, 'shift');
-        this.proxifyFunction(list, 'splice');
-        this.proxifyFunction(list, 'unshift');
+        //We don't need any function-specific operation generation for arrays
     }
 
-    shouldTrackIdentiesForProperty(obj, propertyName) {
+    isTrackedProperty(obj, propertyName) {
         //If it is a number, it's an array element
         //we also check that obj is this.ds since we might
         //be getting asked about a 'nested' property on the ds
         //and we don't want to track any of those.
-        return obj === this.ds && !isNaN(propertyName);
+        return obj === this.ds && (Util.isNumber(propertyName) || propertyName === 'length');
     }
 }
 
 class Util {
     static isPrimitive(val) {
         return val !== Object(val);
+    }
+
+    static isNumber(val) {
+        return !isNaN(val);
+    }
+
+    static isFalsey(val) {
+        return val === null || val === undefined;
     }
 }
 
